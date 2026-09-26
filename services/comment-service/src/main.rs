@@ -15,13 +15,31 @@ use tokio_postgres::{
     NoTls,
 };
 
-#[derive(serde::Serialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
 struct Comment {
     author: String,
     content: String,
 }
 
-async fn post_comment(Json(comment): Json<serde_json::Value>) {}
+async fn post_comment(
+    State(db): State<Arc<Client>>,
+    Json(comment): Json<Comment>,
+) -> Result<(StatusCode, Json<Comment>), StatusCode> {
+    let row = db
+        .query_one(
+            "INSERT INTO comments (author, content) VALUES ($1, $2) RETURNING author, content",
+            &[&comment.author, &comment.content],
+        )
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let comment = Comment {
+        author: row.get("author"),
+        content: row.get("content"),
+    };
+
+    Ok((StatusCode::CREATED, Json(comment)))
+}
 
 async fn get_comments(
     State(db): State<Arc<Client>>,
