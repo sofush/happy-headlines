@@ -1,0 +1,32 @@
+services:
+  postgres-comments:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: comments
+      POSTGRES_USER: comments
+      POSTGRES_PASSWORD: comments
+    ports:
+      - "5432:5432"
+    # volumes:
+    #   - ./database/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U comments -d comments"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  postgres-profanity:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: profanity
+      POSTGRES_USER: profanity
+      POSTGRES_PASSWORD: profanity
+    ports:
+      - "5433:5433"
+    # volumes:
+    #   - ./database/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U profanity -d profanity"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
