@@ -22,7 +22,7 @@ services:
       POSTGRES_USER: profanity
       POSTGRES_PASSWORD: profanity
     ports:
-      - "5433:5433"
+      - "5433:5432"
     # volumes:
     #   - ./database/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
