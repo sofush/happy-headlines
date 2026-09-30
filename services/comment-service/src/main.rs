@@ -22,40 +22,22 @@ use tokio_postgres::{
     NoTls,
 };
 
+use crate::comment::{
+    Comment,
+    CommentQuery,
+    MaskComment,
+    NewComment,
+};
+
 const PROFANITY_SERVICE_URL: &str = "http://profanity-service:3002";
 const PROFANITY_TIMEOUT: Duration = Duration::from_millis(500);
 const FALLBACK_PROFANITY: &[&str] = &["crap", "damn", "shit"];
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
-struct Comment {
-    id: i64,
-    continent: String,
-    article_id: i64,
-    author: String,
-    content: String,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
-struct NewComment {
-    continent: String,
-    article_id: i64,
-    author: String,
-    content: String,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
-struct MaskComment {
-    author: String,
-    content: String,
-}
-
-#[derive(serde::Deserialize)]
-struct CommentQuery {
-    continent: Option<String>,
-    article_id: Option<i64>,
-}
+mod cache;
+mod comment;
 
 struct AppState {
+    redis: redis::aio::MultiplexedConnection,
     db: Client,
     profanity: ProfanityClient,
 }
@@ -104,35 +86,22 @@ async fn get_comments(
     State(state): State<Arc<AppState>>,
     Query(query): Query<CommentQuery>,
 ) -> Result<Json<Vec<Comment>>, StatusCode> {
-    let mut sql = String::from(
-        "SELECT id, continent, article_id, author, content FROM comments",
-    );
-    let mut conditions: Vec<String> = Vec::new();
-    let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = Vec::new();
-
-    let article_id: Option<i64> = query.article_id;
-    let continent: Option<String> = query.continent;
-
-    if let Some(id) = &article_id {
-        params.push(id);
-        conditions.push(format!("article_id = ${}", params.len()));
+    if let Ok(comments) =
+        crate::cache::get_cached_comments(state.redis.clone(), &query).await
+    {
+        return Ok(Json(comments));
     }
 
-    if let Some(name) = &continent {
-        params.push(name);
-        conditions.push(format!("continent = ${}", params.len()));
-    }
-
-    if !conditions.is_empty() {
-        sql.push_str(" WHERE ");
-        sql.push_str(&conditions.join(" AND "));
-    }
-
-    sql.push_str(" ORDER BY id");
+    let sql = r#"
+         SELECT id, continent, article_id, author, content
+         FROM comments
+         WHERE article_id = $1 AND continent = $2
+         ORDER BY id
+         "#;
 
     let rows = state
         .db
-        .query(&sql, &params)
+        .query(sql, &[&query.article_id, &query.continent])
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -146,6 +115,14 @@ async fn get_comments(
             content: r.get("content"),
         })
         .collect();
+
+    crate::cache::store_cached_comments(
+        state.redis.clone(),
+        &query,
+        comments.clone(),
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(comments))
 }
@@ -236,7 +213,10 @@ async fn main() -> anyhow::Result<()> {
         .connect_timeout(PROFANITY_TIMEOUT)
         .build()?;
 
+    let redis = redis::Client::open("redis://redis-cache:6379/")?;
+
     let state = Arc::new(AppState {
+        redis: redis.get_multiplexed_async_connection().await?,
         db: client,
         profanity,
     });
