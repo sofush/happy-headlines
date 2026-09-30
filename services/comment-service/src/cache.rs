@@ -21,7 +21,7 @@ pub async fn store_cached_comments(
     query: &CommentQuery,
     comments: Vec<Comment>,
 ) -> anyhow::Result<()> {
-    let key = format!("comments:{}:{}", query.article_id, query.continent);
+    let key = format!("comments:{}:{}", query.continent, query.article_id);
     let value = serde_json::to_string(&comments)?;
     redis.set(key, value).await.map_err(|e| anyhow!(e))
 }
