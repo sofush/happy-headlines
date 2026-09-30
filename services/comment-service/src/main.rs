@@ -74,8 +74,17 @@ async fn post_comment(
     let row = state
         .db
         .query_one(
-            "INSERT INTO comments (continent, article_id, author, content) VALUES ($1, $2, $3, $4) RETURNING id, continent, article_id, author, content",
-            &[&comment.continent, &comment.article_id, &mask.author, &mask.content],
+            r#"
+            INSERT INTO comments (continent, article_id, author, content)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id, continent, article_id, author, content
+            "#,
+            &[
+                &comment.continent,
+                &comment.article_id,
+                &mask.author,
+                &mask.content,
+            ],
         )
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;

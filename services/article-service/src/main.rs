@@ -136,7 +136,10 @@ async fn delete_article(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn shard<'a>(state: &'a AppState, continent: &str) -> Result<&'a Client, StatusCode> {
+fn shard<'a>(
+    state: &'a AppState,
+    continent: &str,
+) -> Result<&'a Client, StatusCode> {
     state.shards.get(continent).ok_or_else(|| {
         eprintln!("{} rejected unknown continent {continent}", state.instance);
         StatusCode::BAD_REQUEST
@@ -152,7 +155,11 @@ fn article_from(row: tokio_postgres::Row) -> Article {
     }
 }
 
-fn database_error(continent: &str, action: &str, error: tokio_postgres::Error) -> StatusCode {
+fn database_error(
+    continent: &str,
+    action: &str,
+    error: tokio_postgres::Error,
+) -> StatusCode {
     eprintln!("{action} in {continent} failed: {error}");
     StatusCode::INTERNAL_SERVER_ERROR
 }
@@ -183,7 +190,8 @@ async fn main() -> anyhow::Result<()> {
         shards.insert(continent.to_string(), client);
     }
 
-    let instance = std::env::var("HOSTNAME").unwrap_or_else(|_| "article-service".to_string());
+    let instance = std::env::var("HOSTNAME")
+        .unwrap_or_else(|_| "article-service".to_string());
 
     let instance_cloned = instance.clone();
     let state = Arc::new(AppState { shards, instance });
