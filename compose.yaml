@@ -33,16 +33,22 @@ services:
 
   profanity-service:
     build: ./services/profanity-service
+    ports:
+      - "3001:3001"
     depends_on:
       postgres-profanity:
         condition: service_healthy
 
   comment-service:
     build: ./services/comment-service
+    ports:
+      - "3000:3000"
     depends_on:
       postgres-comments:
         condition: service_healthy
       profanity-service:
+        condition: service_started
+      redis-cache:
         condition: service_started
 
   postgres-articles-africa:
@@ -216,6 +222,14 @@ services:
         condition: service_healthy
       postgres-articles-global:
         condition: service_healthy
+
+  redis-cache:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    environment:
+      - REDIS_ARGS=--save "" --appendonly no
+    restart: unless-stopped
 
   loadbalancer:
     image: nginx:1.30-alpine
