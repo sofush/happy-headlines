@@ -22,7 +22,7 @@ use tokio_postgres::{
     NoTls,
 };
 
-const PROFANITY_SERVICE_URL: &str = "http://profanity-service:3001";
+const PROFANITY_SERVICE_URL: &str = "http://profanity-service:3002";
 const PROFANITY_TIMEOUT: Duration = Duration::from_millis(500);
 const FALLBACK_PROFANITY: &[&str] = &["crap", "damn", "shit"];
 
@@ -237,8 +237,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/comments", get(get_comments))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    println!("Listening on http://localhost:3000");
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3001").await.unwrap();
+    println!("Listening on http://localhost:3001");
     axum::serve(listener, app).await.unwrap();
 
     Ok(())

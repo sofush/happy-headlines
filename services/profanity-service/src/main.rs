@@ -89,8 +89,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/mask", post(mask_comment))
         .with_state(Arc::new(AppState { db: client }));
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3001").await.unwrap();
-    println!("Listening on http://localhost:3001");
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3002").await.unwrap();
+    println!("Listening on http://localhost:3002");
     axum::serve(listener, app).await.unwrap();
 
     Ok(())

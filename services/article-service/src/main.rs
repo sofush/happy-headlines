@@ -196,10 +196,8 @@ async fn main() -> anyhow::Result<()> {
         )
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3002")
-        .await
-        .unwrap();
-    println!("{instance_cloned} listening on http://localhost:3002");
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    println!("{instance_cloned} listening on http://localhost:3000");
     axum::serve(listener, app).await.unwrap();
 
     Ok(())
