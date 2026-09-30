@@ -74,7 +74,7 @@ fn mask_words(text: &str, words: &[String]) -> String {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let (client, connection) = tokio_postgres::connect(
-        "host=localhost port=5433 dbname=profanity user=profanity password=profanity",
+        "host=postgres-profanity port=5432 dbname=profanity user=profanity password=profanity",
         NoTls,
     )
     .await?;

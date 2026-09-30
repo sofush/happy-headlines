@@ -22,7 +22,7 @@ use tokio_postgres::{
     NoTls,
 };
 
-const PROFANITY_SERVICE_URL: &str = "http://localhost:3001";
+const PROFANITY_SERVICE_URL: &str = "http://profanity-service:3001";
 const PROFANITY_TIMEOUT: Duration = Duration::from_millis(500);
 const FALLBACK_PROFANITY: &[&str] = &["crap", "damn", "shit"];
 
@@ -211,7 +211,7 @@ fn mask_locally(content: &str) -> String {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let (client, connection) = tokio_postgres::connect(
-        "host=localhost port=5432 dbname=comments user=comments password=comments",
+        "host=postgres-comments port=5432 dbname=comments user=comments password=comments",
         NoTls,
     )
     .await?;

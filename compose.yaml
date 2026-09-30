@@ -23,13 +23,27 @@ services:
       POSTGRES_PASSWORD: profanity
     ports:
       - "5433:5432"
-    # volumes:
-    #   - ./database/postgres/init:/docker-entrypoint-initdb.d:ro
+    volumes:
+      - ./services/profanity-service/profanity.sql:/docker-entrypoint-initdb.d/profanity.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U profanity -d profanity"]
       interval: 2s
       timeout: 3s
       retries: 15
+
+  profanity-service:
+    build: ./services/profanity-service
+    depends_on:
+      postgres-profanity:
+        condition: service_healthy
+
+  comment-service:
+    build: ./services/comment-service
+    depends_on:
+      postgres-comments:
+        condition: service_healthy
+      profanity-service:
+        condition: service_started
 
   postgres-articles-africa:
     image: postgres:17-alpine
