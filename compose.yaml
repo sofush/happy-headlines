@@ -7,8 +7,8 @@ services:
       POSTGRES_PASSWORD: comments
     ports:
       - "5432:5432"
-    # volumes:
-    #   - ./database/postgres/init:/docker-entrypoint-initdb.d:ro
+    volumes:
+      - ./services/comment-service/comments.sql:/docker-entrypoint-initdb.d/comments.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U comments -d comments"]
       interval: 2s

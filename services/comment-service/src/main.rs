@@ -6,7 +6,10 @@ use std::{
 use axum::{
     Json,
     Router,
-    extract::State,
+    extract::{
+        Query,
+        State,
+    },
     http::StatusCode,
     routing::{
         get,
@@ -25,8 +28,31 @@ const FALLBACK_PROFANITY: &[&str] = &["crap", "damn", "shit"];
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 struct Comment {
+    id: i64,
+    continent: String,
+    article_id: i64,
     author: String,
     content: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+struct NewComment {
+    continent: String,
+    article_id: i64,
+    author: String,
+    content: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+struct MaskComment {
+    author: String,
+    content: String,
+}
+
+#[derive(serde::Deserialize)]
+struct CommentQuery {
+    continent: Option<String>,
+    article_id: Option<i64>,
 }
 
 struct AppState {
@@ -36,20 +62,28 @@ struct AppState {
 
 async fn post_comment(
     State(state): State<Arc<AppState>>,
-    Json(comment): Json<Comment>,
+    Json(comment): Json<NewComment>,
 ) -> Result<(StatusCode, Json<Comment>), StatusCode> {
-    let comment = mask_profanity(&state.profanity, &comment).await;
+    let mask = MaskComment {
+        author: comment.author,
+        content: comment.content,
+    };
+
+    let mask = mask_profanity(&state.profanity, &mask).await;
 
     let row = state
         .db
         .query_one(
-            "INSERT INTO comments (author, content) VALUES ($1, $2) RETURNING author, content",
-            &[&comment.author, &comment.content],
+            "INSERT INTO comments (continent, article_id, author, content) VALUES ($1, $2, $3, $4) RETURNING id, continent, article_id, author, content",
+            &[&comment.continent, &comment.article_id, &mask.author, &mask.content],
         )
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let comment = Comment {
+        id: row.get("id"),
+        continent: row.get("continent"),
+        article_id: row.get("article_id"),
         author: row.get("author"),
         content: row.get("content"),
     };
@@ -59,16 +93,46 @@ async fn post_comment(
 
 async fn get_comments(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<CommentQuery>,
 ) -> Result<Json<Vec<Comment>>, StatusCode> {
+    let mut sql = String::from(
+        "SELECT id, continent, article_id, author, content FROM comments",
+    );
+    let mut conditions: Vec<String> = Vec::new();
+    let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = Vec::new();
+
+    let article_id: Option<i64> = query.article_id;
+    let continent: Option<String> = query.continent;
+
+    if let Some(id) = &article_id {
+        params.push(id);
+        conditions.push(format!("article_id = ${}", params.len()));
+    }
+
+    if let Some(name) = &continent {
+        params.push(name);
+        conditions.push(format!("continent = ${}", params.len()));
+    }
+
+    if !conditions.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&conditions.join(" AND "));
+    }
+
+    sql.push_str(" ORDER BY id");
+
     let rows = state
         .db
-        .query("SELECT author, content FROM comments", &[])
+        .query(&sql, &params)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let comments: Vec<Comment> = rows
         .iter()
         .map(|r| Comment {
+            id: r.get("id"),
+            continent: r.get("continent"),
+            article_id: r.get("article_id"),
             author: r.get("author"),
             content: r.get("content"),
         })
@@ -79,13 +143,13 @@ async fn get_comments(
 
 async fn mask_profanity(
     profanity: &ProfanityClient,
-    comment: &Comment,
-) -> Comment {
+    comment: &MaskComment,
+) -> MaskComment {
     let content = remote_mask(profanity, comment)
         .await
         .unwrap_or_else(|| mask_locally(&comment.content));
 
-    Comment {
+    MaskComment {
         author: comment.author.clone(),
         content,
     }
@@ -93,7 +157,7 @@ async fn mask_profanity(
 
 async fn remote_mask(
     profanity: &ProfanityClient,
-    comment: &Comment,
+    comment: &MaskComment,
 ) -> Option<String> {
     let response = profanity
         .post(format!("{PROFANITY_SERVICE_URL}/mask"))
@@ -113,7 +177,7 @@ async fn remote_mask(
         return None;
     }
 
-    match response.json::<Comment>().await {
+    match response.json::<MaskComment>().await {
         Ok(masked) => Some(masked.content),
         Err(e) => {
             eprintln!(
