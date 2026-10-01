@@ -94,7 +94,7 @@ pub async fn acquire_filler_lease(
                 instance,
                 SetOptions::default()
                     .conditional_set(ExistenceCheck::NX)
-                    .with_expiration(SetExpiry::EX(10 * 60)),
+                    .with_expiration(SetExpiry::EX(30 * 60)),
             )
             .await?;
 
