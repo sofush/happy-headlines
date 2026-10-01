@@ -6,6 +6,7 @@ use redis::{
     SetExpiry,
     SetOptions,
 };
+use tracing::Instrument as _;
 
 use crate::article::Article;
 
@@ -23,8 +24,18 @@ pub async fn get_cached_article(
     continent: &str,
     id: i64,
 ) -> anyhow::Result<Article> {
-    let value: String = redis.get(cache_key(continent, id)).await?;
-    serde_json::from_str::<_>(&value).map_err(|e| anyhow!(e))
+    async {
+        let value: String = redis.get(cache_key(continent, id)).await?;
+        serde_json::from_str::<_>(&value).map_err(|e| anyhow!(e))
+    }
+    .instrument(tracing::debug_span!(
+        "cache.get",
+        "db.system" = "redis",
+        "db.operation.name" = "get",
+        continent,
+        "article.id" = %id
+    ))
+    .await
 }
 
 pub async fn store_cached_article(
@@ -33,11 +44,21 @@ pub async fn store_cached_article(
     id: i64,
     article: &Article,
 ) -> anyhow::Result<()> {
-    let value = serde_json::to_string(article)?;
-    redis
-        .set::<_, _, ()>(cache_key(continent, id), value)
-        .await?;
-    Ok(())
+    async {
+        let value = serde_json::to_string(article)?;
+        redis
+            .set::<_, _, ()>(cache_key(continent, id), value)
+            .await?;
+        Ok(())
+    }
+    .instrument(tracing::debug_span!(
+        "cache.set",
+        "db.system" = "redis",
+        "db.operation.name" = "set",
+        continent,
+        "article.id" = %id
+    ))
+    .await
 }
 
 pub async fn evict_cached_article(
@@ -45,23 +66,42 @@ pub async fn evict_cached_article(
     continent: &str,
     id: i64,
 ) -> anyhow::Result<()> {
-    redis.del::<_, ()>(cache_key(continent, id)).await?;
-    Ok(())
+    async {
+        redis.del::<_, ()>(cache_key(continent, id)).await?;
+        Ok(())
+    }
+    .instrument(tracing::debug_span!(
+        "cache.del",
+        "db.system" = "redis",
+        "db.operation.name" = "del",
+        continent,
+        "article.id" = %id
+    ))
+    .await
 }
 
 pub async fn acquire_filler_lease(
     mut redis: redis::aio::MultiplexedConnection,
     instance: &str,
 ) -> anyhow::Result<bool> {
-    let claim: Option<String> = redis
-        .set_options(
-            FILLER_LEASE_KEY,
-            instance,
-            SetOptions::default()
-                .conditional_set(ExistenceCheck::NX)
-                .with_expiration(SetExpiry::EX(FILLER_LEASE_TTL.as_secs())),
-        )
-        .await?;
+    async {
+        let claim: Option<String> = redis
+            .set_options(
+                FILLER_LEASE_KEY,
+                instance,
+                SetOptions::default()
+                    .conditional_set(ExistenceCheck::NX)
+                    .with_expiration(SetExpiry::EX(FILLER_LEASE_TTL.as_secs())),
+            )
+            .await?;
 
-    Ok(claim.is_some())
+        Ok(claim.is_some())
+    }
+    .instrument(tracing::debug_span!(
+        "cache.acquire_lease",
+        "db.system" = "redis",
+        "db.operation.name" = "acquire_lease",
+        instance
+    ))
+    .await
 }

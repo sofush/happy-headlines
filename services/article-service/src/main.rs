@@ -20,10 +20,17 @@ use tokio_postgres::{
     Client,
     NoTls,
 };
+use tower_http::trace::TraceLayer;
 
-use crate::article::{
-    Article,
-    NewArticle,
+use crate::{
+    article::{
+        Article,
+        NewArticle,
+    },
+    telemetry::{
+        HttpMakeSpan,
+        HttpOnResponse,
+    },
 };
 
 const REDIS_URL: &str = "redis://redis-articles-cache:6379/";
@@ -42,6 +49,7 @@ const CONTINENTS: &[(&str, &str)] = &[
 mod article;
 mod cache;
 mod filler;
+mod telemetry;
 
 pub struct AppState {
     pub shards: HashMap<String, Client>,
@@ -49,6 +57,11 @@ pub struct AppState {
     pub redis: redis::aio::MultiplexedConnection,
 }
 
+#[tracing::instrument(
+    level = "INFO",
+    skip(state, article),
+    fields(continent = %continent)
+)]
 async fn create_article(
     State(state): State<Arc<AppState>>,
     Path(continent): Path<String>,
@@ -74,17 +87,24 @@ async fn create_article(
     )
     .await
     {
-        eprintln!(
-            "{} could not cache created article {}: {e}",
-            state.instance, article.id
+        tracing::warn!(
+            continent = %continent,
+            article.id = article.id,
+            error = %e,
+            "could not cache created article"
         );
     }
 
-    log(&state, "create", &continent);
+    tracing::info!(continent = %continent, article.id = article.id, "article created");
 
     Ok((StatusCode::CREATED, Json(article)))
 }
 
+#[tracing::instrument(
+    level = "INFO",
+    skip(state),
+    fields(continent = %continent, id = %id, cache = tracing::field::Empty)
+)]
 async fn get_article(
     State(state): State<Arc<AppState>>,
     Path((continent, id)): Path<(String, i64)>,
@@ -94,9 +114,12 @@ async fn get_article(
     if let Ok(article) =
         cache::get_cached_article(state.redis.clone(), &continent, id).await
     {
-        log(&state, "read", &continent);
+        tracing::Span::current().record("cache", "hit");
+        tracing::info!(continent = %continent, id = %id, "article read");
         return Ok(Json(article));
     }
+
+    tracing::Span::current().record("cache", "miss");
 
     let row = shard
         .query_opt(
@@ -109,15 +132,20 @@ async fn get_article(
     let article = match row {
         Some(row) => Article::from_row(row),
         None => {
-            log(&state, "read", &continent);
+            tracing::info!(continent = %continent, id = %id, "article not found");
             return Err(StatusCode::NOT_FOUND);
         }
     };
 
-    log(&state, "read", &continent);
+    tracing::info!(continent = %continent, id = %id, "article read");
     Ok(Json(article))
 }
 
+#[tracing::instrument(
+    level = "INFO",
+    skip(state, article),
+    fields(continent = %continent, id = %id)
+)]
 async fn update_article(
     State(state): State<Arc<AppState>>,
     Path((continent, id)): Path<(String, i64)>,
@@ -136,15 +164,24 @@ async fn update_article(
     let updated = match row {
         Some(row) => Article::from_row(row),
         None => {
-            log(&state, "update", &continent);
+            tracing::info!(
+                continent = %continent,
+                id = %id,
+                "article not found"
+            );
             return Err(StatusCode::NOT_FOUND);
         }
     };
 
-    log(&state, "update", &continent);
+    tracing::info!(
+        continent = %continent,
+        id = %updated.id,
+        "article updated"
+    );
     Ok(Json(updated))
 }
 
+#[tracing::instrument(level = "INFO", skip(state), fields(continent = %continent, id = %id))]
 async fn delete_article(
     State(state): State<Arc<AppState>>,
     Path((continent, id)): Path<(String, i64)>,
@@ -159,18 +196,20 @@ async fn delete_article(
     if let Err(e) =
         cache::evict_cached_article(state.redis.clone(), &continent, id).await
     {
-        eprintln!(
-            "{} could not evict deleted article {}: {e}",
-            state.instance, id
+        tracing::warn!(
+            continent = %continent,
+            id = %id,
+            error = %e,
+            "could not evict deleted article"
         );
     }
 
-    log(&state, "delete", &continent);
-
     if deleted == 0 {
+        tracing::info!(continent = %continent, id = %id, "article not found");
         return Err(StatusCode::NOT_FOUND);
     }
 
+    tracing::info!(continent = %continent, id = %id, "article deleted");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -179,7 +218,7 @@ fn shard<'a>(
     continent: &str,
 ) -> Result<&'a Client, StatusCode> {
     state.shards.get(continent).ok_or_else(|| {
-        eprintln!("{} rejected unknown continent {continent}", state.instance);
+        tracing::warn!(continent, "rejected request for unknown continent");
         StatusCode::BAD_REQUEST
     })
 }
@@ -189,16 +228,42 @@ fn database_error(
     action: &str,
     error: tokio_postgres::Error,
 ) -> StatusCode {
-    eprintln!("{action} in {continent} failed: {error}");
+    tracing::error!(continent, action, error = %error, "database query failed");
     StatusCode::INTERNAL_SERVER_ERROR
 }
 
-fn log(state: &AppState, action: &str, continent: &str) {
-    println!("{} {action} article in {continent}", state.instance);
+async fn shutdown_signal() {
+    let interrupt = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(
+            tokio::signal::unix::SignalKind::terminate(),
+        ) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "could not listen for SIGTERM");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = interrupt => {}
+        () = terminate => {}
+    }
+
+    tracing::info!("shutdown requested, draining in-flight requests");
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn serve(instance: &str) -> anyhow::Result<()> {
     let mut shards = HashMap::new();
 
     for (continent, dbname) in CONTINENTS {
@@ -210,26 +275,25 @@ async fn main() -> anyhow::Result<()> {
         )
         .await?;
 
+        let owned = continent.to_string();
+        let watched = owned.clone();
+
         tokio::spawn(async move {
             if let Err(e) = connection.await {
-                eprintln!("{} connection error: {}", continent, e);
+                tracing::error!(continent = %watched, error = %e, "database connection lost");
             }
         });
 
-        shards.insert(continent.to_string(), client);
+        shards.insert(owned, client);
     }
-
-    let instance = std::env::var("HOSTNAME")
-        .unwrap_or_else(|_| "article-service".to_string());
 
     let redis = redis::Client::open(REDIS_URL)?
         .get_multiplexed_async_connection()
         .await?;
 
-    let instance_cloned = instance.clone();
     let state = Arc::new(AppState {
         shards,
-        instance,
+        instance: instance.to_string(),
         redis,
     });
 
@@ -241,11 +305,37 @@ async fn main() -> anyhow::Result<()> {
             "/continents/{continent}/articles/{id}",
             get(get_article).put(update_article).delete(delete_article),
         )
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(HttpMakeSpan)
+                .on_response(HttpOnResponse),
+        )
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    println!("{instance_cloned} listening on http://localhost:3000");
-    axum::serve(listener, app).await.unwrap();
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
+    tracing::info!(instance, address = %listener.local_addr()?, "article-service listening");
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
 
     Ok(())
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let instance = std::env::var("HOSTNAME")
+        .unwrap_or_else(|_| "article-service".to_string());
+
+    telemetry::init(&instance)?;
+
+    let result = serve(&instance).await;
+
+    if let Err(e) = &result {
+        tracing::error!(instance, error = %format!("{e:#}"), "article-service stopped");
+    }
+
+    telemetry::shutdown();
+
+    result
 }

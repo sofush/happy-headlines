@@ -5,6 +5,7 @@ use chrono::{
     Utc,
 };
 use redis::AsyncCommands as _;
+use tracing::Instrument as _;
 
 use crate::{
     AppState,
@@ -16,6 +17,7 @@ use anyhow::anyhow;
 
 pub fn spawn(state: std::sync::Arc<AppState>) {
     let fill_interval = Duration::from_secs(30 * 60);
+    let instance = state.instance.clone();
 
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(fill_interval);
@@ -24,20 +26,28 @@ pub fn spawn(state: std::sync::Arc<AppState>) {
         loop {
             ticker.tick().await;
 
-            if let Err(e) = refresh(&state).await {
-                eprintln!("{} cache refresh failed: {e}", state.instance);
-            }
+            let refresh = async {
+                if let Err(e) = refresh(&state).await {
+                    tracing::error!(error = %format!("{e:#}"), "cache refresh failed");
+                }
+            };
+
+            refresh
+                .instrument(
+                    tracing::info_span!("cache.refresh", instance = %instance),
+                )
+                .await;
         }
     });
 }
 
+#[tracing::instrument(level = "INFO", skip(state))]
 async fn refresh(state: &AppState) -> anyhow::Result<()> {
     if !cache::acquire_filler_lease(state.redis.clone(), &state.instance)
         .await?
     {
-        eprintln!(
-            "{} skipping cache refresh, another replica holds the lease",
-            state.instance
+        tracing::debug!(
+            "skipping cache refresh, another replica holds the lease"
         );
         return Ok(());
     }
@@ -48,14 +58,12 @@ async fn refresh(state: &AppState) -> anyhow::Result<()> {
     let filled = fill_with_latest_articles(state, date_cutoff).await?;
     let evicted = evict_old_articles(state, date_cutoff).await?;
 
-    println!(
-        "{} cached {filled} recent articles and evicted {evicted} expired ones",
-        state.instance
-    );
+    tracing::info!(filled, evicted, "refreshed the article cache");
 
     Ok(())
 }
 
+#[tracing::instrument(level = "DEBUG", skip(state, cutoff))]
 async fn fill_with_latest_articles(
     state: &AppState,
     cutoff: DateTime<Utc>,
@@ -63,17 +71,26 @@ async fn fill_with_latest_articles(
     let mut articles = Vec::new();
 
     for (continent, shard) in &state.shards {
-        let rows = shard
-            .query(
-                r#"
+        let rows = async {
+            shard
+                .uery(
+                    r#"
                 SELECT id, continent, title, content, published_at
                 FROM articles
                 WHERE published_at >= $1
                 "#,
-                &[&cutoff],
-            )
-            .await
-            .map_err(|e| anyhow!("{continent}: {e}"))?;
+                    &[&cutoff],
+                )
+                .await
+                .map_err(|e| anyhow!("{continent}: {e}"))
+        }
+        .instrument(tracing::debug_span!(
+            "db.query",
+            "db.system" = "postgresql",
+            "db.operation.name" = "select_recent_articles",
+            continent = %continent
+        ))
+        .await?;
 
         for row in rows {
             articles.push(Article::from_row(row));
@@ -91,10 +108,18 @@ async fn fill_with_latest_articles(
         .ignore();
     }
 
-    pipe.query_async::<()>(&mut redis).await?;
+    async { pipe.query_async::<()>(&mut redis).await }
+        .instrument(tracing::debug_span!(
+            "cache.warm",
+            "db.system" = "redis",
+            articles = articles.len()
+        ))
+        .await?;
+
     Ok(articles.len())
 }
 
+#[tracing::instrument(level = "DEBUG", skip(state, cutoff))]
 async fn evict_old_articles(
     state: &AppState,
     cutoff: DateTime<Utc>,
