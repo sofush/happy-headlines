@@ -12,8 +12,7 @@ use crate::article::Article;
 
 use anyhow::anyhow;
 
-const FILLER_LEASE_KEY: &str = "articlecache:filler";
-const FILLER_LEASE_TTL: Duration = Duration::from_secs(30 * 60);
+pub const CACHE_PURGE_AGE: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 
 pub fn cache_key(continent: &str, id: i64) -> String {
     format!("articles:{continent}:{id}")
@@ -47,7 +46,11 @@ pub async fn store_cached_article(
     async {
         let value = serde_json::to_string(article)?;
         redis
-            .set::<_, _, ()>(cache_key(continent, id), value)
+            .set_ex::<_, _, ()>(
+                cache_key(continent, id),
+                value,
+                CACHE_PURGE_AGE.as_secs(),
+            )
             .await?;
         Ok(())
     }
@@ -87,11 +90,11 @@ pub async fn acquire_filler_lease(
     async {
         let claim: Option<String> = redis
             .set_options(
-                FILLER_LEASE_KEY,
+                "articlecache:filler",
                 instance,
                 SetOptions::default()
                     .conditional_set(ExistenceCheck::NX)
-                    .with_expiration(SetExpiry::EX(FILLER_LEASE_TTL.as_secs())),
+                    .with_expiration(SetExpiry::EX(10 * 60)),
             )
             .await?;
 

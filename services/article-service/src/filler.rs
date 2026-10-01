@@ -52,14 +52,11 @@ async fn refresh(state: &AppState) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let date_cutoff: DateTime<Utc> =
-        Utc::now() - Duration::from_secs(14 * 24 * 60 * 60);
-
+    let date_cutoff: DateTime<Utc> = Utc::now() - cache::CACHE_PURGE_AGE;
     let filled = fill_with_latest_articles(state, date_cutoff).await?;
     let evicted = evict_old_articles(state, date_cutoff).await?;
 
     tracing::info!(filled, evicted, "refreshed the article cache");
-
     Ok(())
 }
 
@@ -73,12 +70,12 @@ async fn fill_with_latest_articles(
     for (continent, shard) in &state.shards {
         let rows = async {
             shard
-                .uery(
+                .query(
                     r#"
-                SELECT id, continent, title, content, published_at
-                FROM articles
-                WHERE published_at >= $1
-                "#,
+                    SELECT id, continent, title, content, published_at
+                    FROM articles
+                    WHERE published_at >= $1
+                    "#,
                     &[&cutoff],
                 )
                 .await
@@ -97,13 +94,18 @@ async fn fill_with_latest_articles(
         }
     }
 
+    if articles.is_empty() {
+        return Ok(0);
+    }
+
     let mut redis = state.redis.clone();
     let mut pipe = redis::pipe();
 
     for a in &articles {
-        pipe.set(
+        pipe.set_ex(
             cache::cache_key(&a.continent, a.id),
             serde_json::to_string(a)?,
+            cache::CACHE_PURGE_AGE.as_secs(),
         )
         .ignore();
     }
@@ -135,6 +137,10 @@ async fn evict_old_articles(
 
         keys
     };
+
+    if keys.is_empty() {
+        return Ok(0);
+    }
 
     let mut redis = state.redis.clone();
 
