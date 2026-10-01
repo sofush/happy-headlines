@@ -21,6 +21,13 @@ use tokio_postgres::{
     NoTls,
 };
 
+use crate::article::{
+    Article,
+    NewArticle,
+};
+
+const REDIS_URL: &str = "redis://redis-articles-cache:6379/";
+
 const CONTINENTS: &[(&str, &str)] = &[
     ("africa", "articles_africa"),
     ("antarctica", "articles_antarctica"),
@@ -32,23 +39,14 @@ const CONTINENTS: &[(&str, &str)] = &[
     ("global", "articles_global"),
 ];
 
-struct AppState {
-    shards: HashMap<String, Client>,
-    instance: String,
-}
+mod article;
+mod cache;
+mod filler;
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
-struct Article {
-    id: i64,
-    continent: String,
-    title: String,
-    content: String,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
-struct NewArticle {
-    title: String,
-    content: String,
+pub struct AppState {
+    pub shards: HashMap<String, Client>,
+    pub instance: String,
+    pub redis: redis::aio::MultiplexedConnection,
 }
 
 async fn create_article(
@@ -60,15 +58,31 @@ async fn create_article(
 
     let row = shard
         .query_one(
-            "INSERT INTO articles (continent, title, content) VALUES ($1, $2, $3) RETURNING id, continent, title, content",
+            "INSERT INTO articles (continent, title, content) VALUES ($1, $2, $3) RETURNING id, continent, title, content, published_at",
             &[&continent, &article.title, &article.content],
         )
         .await
         .map_err(|e| database_error(&continent, "create", e))?;
 
+    let article = Article::from_row(row);
+
+    if let Err(e) = cache::store_cached_article(
+        state.redis.clone(),
+        &continent,
+        article.id,
+        &article,
+    )
+    .await
+    {
+        eprintln!(
+            "{} could not cache created article {}: {e}",
+            state.instance, article.id
+        );
+    }
+
     log(&state, "create", &continent);
 
-    Ok((StatusCode::CREATED, Json(article_from(row))))
+    Ok((StatusCode::CREATED, Json(article)))
 }
 
 async fn get_article(
@@ -77,20 +91,31 @@ async fn get_article(
 ) -> Result<Json<Article>, StatusCode> {
     let shard = shard(&state, &continent)?;
 
+    if let Ok(article) =
+        cache::get_cached_article(state.redis.clone(), &continent, id).await
+    {
+        log(&state, "read", &continent);
+        return Ok(Json(article));
+    }
+
     let row = shard
         .query_opt(
-            "SELECT id, continent, title, content FROM articles WHERE id = $1",
+            "SELECT id, continent, title, content, published_at FROM articles WHERE id = $1",
             &[&id],
         )
         .await
         .map_err(|e| database_error(&continent, "read", e))?;
 
-    log(&state, "read", &continent);
+    let article = match row {
+        Some(row) => Article::from_row(row),
+        None => {
+            log(&state, "read", &continent);
+            return Err(StatusCode::NOT_FOUND);
+        }
+    };
 
-    match row {
-        Some(row) => Ok(Json(article_from(row))),
-        None => Err(StatusCode::NOT_FOUND),
-    }
+    log(&state, "read", &continent);
+    Ok(Json(article))
 }
 
 async fn update_article(
@@ -102,18 +127,22 @@ async fn update_article(
 
     let row = shard
         .query_opt(
-            "UPDATE articles SET title = $2, content = $3 WHERE id = $1 RETURNING id, continent, title, content",
+            "UPDATE articles SET title = $2, content = $3 WHERE id = $1 RETURNING id, continent, title, content, published_at",
             &[&id, &article.title, &article.content],
         )
         .await
         .map_err(|e| database_error(&continent, "update", e))?;
 
-    log(&state, "update", &continent);
+    let updated = match row {
+        Some(row) => Article::from_row(row),
+        None => {
+            log(&state, "update", &continent);
+            return Err(StatusCode::NOT_FOUND);
+        }
+    };
 
-    match row {
-        Some(row) => Ok(Json(article_from(row))),
-        None => Err(StatusCode::NOT_FOUND),
-    }
+    log(&state, "update", &continent);
+    Ok(Json(updated))
 }
 
 async fn delete_article(
@@ -126,6 +155,15 @@ async fn delete_article(
         .execute("DELETE FROM articles WHERE id = $1", &[&id])
         .await
         .map_err(|e| database_error(&continent, "delete", e))?;
+
+    if let Err(e) =
+        cache::evict_cached_article(state.redis.clone(), &continent, id).await
+    {
+        eprintln!(
+            "{} could not evict deleted article {}: {e}",
+            state.instance, id
+        );
+    }
 
     log(&state, "delete", &continent);
 
@@ -144,15 +182,6 @@ fn shard<'a>(
         eprintln!("{} rejected unknown continent {continent}", state.instance);
         StatusCode::BAD_REQUEST
     })
-}
-
-fn article_from(row: tokio_postgres::Row) -> Article {
-    Article {
-        id: row.get("id"),
-        continent: row.get("continent"),
-        title: row.get("title"),
-        content: row.get("content"),
-    }
 }
 
 fn database_error(
@@ -193,8 +222,18 @@ async fn main() -> anyhow::Result<()> {
     let instance = std::env::var("HOSTNAME")
         .unwrap_or_else(|_| "article-service".to_string());
 
+    let redis = redis::Client::open(REDIS_URL)?
+        .get_multiplexed_async_connection()
+        .await?;
+
     let instance_cloned = instance.clone();
-    let state = Arc::new(AppState { shards, instance });
+    let state = Arc::new(AppState {
+        shards,
+        instance,
+        redis,
+    });
+
+    filler::spawn(state.clone());
 
     let app = Router::new()
         .route("/continents/{continent}/articles", post(create_article))
