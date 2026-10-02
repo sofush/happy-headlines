@@ -16,6 +16,9 @@ use axum::{
         post,
     },
 };
+use axum_prometheus::PrometheusMetricLayer;
+use metrics::Counter;
+use std::sync::LazyLock;
 use tokio_postgres::{
     Client,
     NoTls,
@@ -50,6 +53,12 @@ mod article;
 mod cache;
 mod filler;
 mod telemetry;
+
+static ARTICLE_CACHE_HITS_TOTAL: LazyLock<Counter> =
+    LazyLock::new(|| metrics::counter!("article_cache_hits_total"));
+
+static ARTICLE_CACHE_MISSES_TOTAL: LazyLock<Counter> =
+    LazyLock::new(|| metrics::counter!("article_cache_misses_total"));
 
 pub struct AppState {
     pub shards: HashMap<String, Client>,
@@ -115,11 +124,13 @@ async fn get_article(
         cache::get_cached_article(state.redis.clone(), &continent, id).await
     {
         tracing::Span::current().record("cache", "hit");
+        ARTICLE_CACHE_HITS_TOTAL.increment(1);
         tracing::info!(continent = %continent, id = %id, "article read");
         return Ok(Json(article));
     }
 
     tracing::Span::current().record("cache", "miss");
+    ARTICLE_CACHE_MISSES_TOTAL.increment(1);
 
     let row = shard
         .query_opt(
@@ -264,6 +275,8 @@ async fn shutdown_signal() {
 }
 
 async fn serve(instance: &str) -> anyhow::Result<()> {
+    let (prometheus_layer, metric_handle) = PrometheusMetricLayer::pair();
+
     let mut shards = HashMap::new();
 
     for (continent, dbname) in CONTINENTS {
@@ -305,6 +318,8 @@ async fn serve(instance: &str) -> anyhow::Result<()> {
             "/continents/{continent}/articles/{id}",
             get(get_article).put(update_article).delete(delete_article),
         )
+        .route("/metrics", get(|| async move { metric_handle.render() }))
+        .layer(prometheus_layer)
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(HttpMakeSpan)

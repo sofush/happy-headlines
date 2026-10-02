@@ -1,0 +1,16 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'article-services'
+    static_configs:
+      - targets:
+          - 'article-service-1:3000'
+          - 'article-service-2:3000'
+          - 'article-service-3:3000'
+
+  - job_name: 'comment-service'
+    static_configs:
+      - targets:
+          - 'comment-service:3001'

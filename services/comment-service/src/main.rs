@@ -16,7 +16,10 @@ use axum::{
         post,
     },
 };
+use axum_prometheus::PrometheusMetricLayer;
+use metrics::Counter;
 use reqwest::Client as ProfanityClient;
+use std::sync::LazyLock;
 use tokio_postgres::{
     Client,
     NoTls,
@@ -32,6 +35,12 @@ use crate::comment::{
 const PROFANITY_SERVICE_URL: &str = "http://profanity-service:3002";
 const PROFANITY_TIMEOUT: Duration = Duration::from_millis(500);
 const FALLBACK_PROFANITY: &[&str] = &["crap", "damn", "shit"];
+
+static COMMENT_CACHE_HITS_TOTAL: LazyLock<Counter> =
+    LazyLock::new(|| metrics::counter!("comment_cache_hits_total"));
+
+static COMMENT_CACHE_MISSES_TOTAL: LazyLock<Counter> =
+    LazyLock::new(|| metrics::counter!("comment_cache_misses_total"));
 
 mod cache;
 mod comment;
@@ -89,8 +98,11 @@ async fn get_comments(
     if let Ok(comments) =
         crate::cache::get_cached_comments(state.redis.clone(), &query).await
     {
+        COMMENT_CACHE_HITS_TOTAL.increment(1);
         return Ok(Json(comments));
     }
+
+    COMMENT_CACHE_MISSES_TOTAL.increment(1);
 
     let sql = r#"
          SELECT id, continent, article_id, author, content
@@ -196,6 +208,8 @@ fn mask_locally(content: &str) -> String {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let (prometheus_layer, metric_handle) = PrometheusMetricLayer::pair();
+
     let (client, connection) = tokio_postgres::connect(
         "host=postgres-comments port=5432 dbname=comments user=comments password=comments",
         NoTls,
@@ -224,6 +238,8 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/comments", post(post_comment))
         .route("/comments", get(get_comments))
+        .route("/metrics", get(|| async move { metric_handle.render() }))
+        .layer(prometheus_layer)
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3001").await.unwrap();
