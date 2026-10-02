@@ -24,8 +24,6 @@ pub fn spawn(state: std::sync::Arc<AppState>) {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
-            ticker.tick().await;
-
             let refresh = async {
                 if let Err(e) = refresh(&state).await {
                     tracing::error!(error = %format!("{e:#}"), "cache refresh failed");
@@ -37,6 +35,8 @@ pub fn spawn(state: std::sync::Arc<AppState>) {
                     tracing::info_span!("cache.refresh", instance = %instance),
                 )
                 .await;
+
+            ticker.tick().await;
         }
     });
 }
