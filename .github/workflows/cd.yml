@@ -5,6 +5,11 @@ on:
     tags:
       - release
       - "v[0-9]*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Image version/tag (for example v1.2.3)"
+        required: true
 
 permissions:
   contents: read
@@ -35,7 +40,9 @@ jobs:
 
       - name: Set image version
         id: version
-        run: echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: echo "value=${INPUT_VERSION:-${GITHUB_REF_NAME}}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
