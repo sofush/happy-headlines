@@ -31,6 +31,22 @@ services:
       timeout: 3s
       retries: 15
 
+  postgres-subscribers:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: subscribers
+      POSTGRES_USER: subscribers
+      POSTGRES_PASSWORD: subscribers
+    ports:
+      - "5434:5432"
+    volumes:
+      - ./services/subscriber-service/subscribers.sql:/docker-entrypoint-initdb.d/subscribers.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U subscribers -d subscribers"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
   profanity-service:
     build: ./services/profanity-service
     ports:
@@ -38,6 +54,16 @@ services:
     depends_on:
       postgres-profanity:
         condition: service_healthy
+
+  subscriber-service:
+    build: ./services/subscriber-service
+    ports:
+      - "3003:3003"
+    depends_on:
+      postgres-subscribers:
+        condition: service_healthy
+      redis-subscriber-queue:
+        condition: service_started
 
   comment-service:
     build: ./services/comment-service
@@ -268,6 +294,14 @@ services:
     image: redis:alpine
     ports:
       - "6380:6379"
+    environment:
+      - REDIS_ARGS=--save "" --appendonly no
+    restart: unless-stopped
+
+  redis-subscriber-queue:
+    image: redis:alpine
+    ports:
+      - "6381:6379"
     environment:
       - REDIS_ARGS=--save "" --appendonly no
     restart: unless-stopped

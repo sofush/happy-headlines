@@ -29,6 +29,7 @@ jobs:
           - article-service
           - comment-service
           - profanity-service
+          - subscriber-service
 
     steps:
       - name: Check out repository
