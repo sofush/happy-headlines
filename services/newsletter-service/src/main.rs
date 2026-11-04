@@ -8,6 +8,8 @@ use axum::{
     routing::post,
 };
 
+mod emails;
+
 const SUBSCRIBER_SERVICE_URL: &str = "http://subscriber-service:3003";
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
@@ -24,62 +26,13 @@ struct AppState {
     http: reqwest::Client,
 }
 
-use serde::Deserialize;
-
-#[derive(Debug, Deserialize)]
-pub struct FeatureHubResponse {
-    pub id: String,
-    pub features: Vec<Feature>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct Feature {
-    pub id: String,
-    pub key: String,
-    pub value: serde_json::Value,
-    pub version: u32,
-
-    #[serde(rename = "l", default)]
-    pub locked: bool,
-
-    #[serde(rename = "type")]
-    pub feature_type: String,
-}
-
-async fn should_send_emails() -> anyhow::Result<bool> {
-    let feature_hub_url = std::env::var("FEATUREHUB_URL")?;
-    let api_key = std::env::var("FEATUREHUB_API_KEY")?;
-    let client = reqwest::Client::new();
-
-    let response = client
-        .get(format!("{}/features?apiKey={}", feature_hub_url, api_key))
-        .send()
-        .await?
-        .error_for_status()?;
-
-    let response: Vec<FeatureHubResponse> = response.json().await?;
-
-    for item in response {
-        for feature in item.features {
-            if feature.feature_type != "BOOLEAN" {
-                continue;
-            }
-
-            if feature.key != "send-emails" {
-                continue;
-            }
-
-            return Ok(feature.value.as_bool().unwrap_or(true));
-        }
-    }
-
-    Ok(true)
-}
-
 async fn send_newsletters(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<NewsletterRun>, StatusCode> {
-    if should_send_emails().await.is_ok_and(|b| !b) {
+    let should_send_emails =
+        emails::should_send_emails().await.is_ok_and(|b| b);
+
+    if !should_send_emails {
         return Ok(Json(NewsletterRun { sent: 0 }));
     }
 
