@@ -28,6 +28,7 @@ jobs:
         service:
           - article-service
           - comment-service
+          - newsletter-service
           - profanity-service
           - subscriber-service
 

@@ -65,6 +65,14 @@ services:
       redis-subscriber-queue:
         condition: service_started
 
+  newsletter-service:
+    build: ./services/newsletter-service
+    ports:
+      - "3004:3004"
+    depends_on:
+      subscriber-service:
+        condition: service_started
+
   comment-service:
     build: ./services/comment-service
     ports:
