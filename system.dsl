@@ -49,11 +49,11 @@ workspace "HappyHeadlines System" {
                 tag "Service"
             }
             
-            subscriberService = container "SubscriberService" "Manages subscriber requests and information." "Service" {
+            subscriberService = container "SubscriberService" "Manages subscriber requests and information, and places new subscribers in the subscriber queue." "Service" {
                 tag "Service"
             }
             
-            newsletterService = container "NewsletterService" "Manages the daily newsletter process and sends updates to active subscribers." "Service" {
+            newsletterService = container "NewsletterService" "Manages the daily newsletter process, sends updates to active subscribers, and sends welcome emails to new subscribers." "Service" {
                 tag "Service"
             }
 
@@ -119,8 +119,8 @@ workspace "HappyHeadlines System" {
             subscriberService -> subscriberQueue "Places new subscribers into"
             
             newsletterService -> articleService "Retrieves recent articles from"
-            newsletterService -> subscriberService "Retrieves active subscriber info from"
-            newsletterService -> reader "Sends daily newsletter emails to"
+            newsletterService -> subscriberService "Retrieves active subscriber info and new subscribers from"
+            newsletterService -> reader "Sends daily newsletter emails and welcome emails to new subscribers"
         }
 
         # --- Context Level Relationships ---
