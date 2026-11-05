@@ -2,6 +2,8 @@ FROM rust:1.98-slim-bookworm AS build
 
 WORKDIR /app
 
+COPY --from=feature-lib . /feature-lib
+
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 
