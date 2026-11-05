@@ -53,21 +53,15 @@ impl Features {
     }
 
     pub async fn get(&self, key: &str) -> anyhow::Result<Feature> {
-        eprintln!("key: {key}");
-
         if self.cache_expired().await && self.should_try_lookup().await {
-            eprintln!("try fetch");
             let _ = self.try_fetch().await;
         }
-
-        eprintln!("getting from cache");
 
         let cache = self.cache.read().await;
 
         match cache.cached_features.iter().find(|f| f.key == key).cloned() {
             Some(f) => Ok(f),
             None => {
-                eprintln!("could not find the key");
                 bail!("Could not find a feature with key `{key}`");
             }
         }
@@ -78,46 +72,53 @@ impl Features {
             self.cache.write().await.last_lookup = Some(Instant::now());
         }
 
-        let attempts = 3;
-
-        let do_timeout = async |idx: u32| {
-            eprintln!("timeout {idx}");
-            let timeout = Duration::from_millis(100) * idx.pow(2);
-            let _ = tokio::time::sleep(timeout).await;
-        };
+        const ATTEMPTS: u32 = 3;
 
         let client = reqwest::Client::new();
+        let mut last_error = None;
 
-        for i in 1..=attempts {
-            eprintln!("attempt {i}");
-            let Ok(response) = client
-                .get(format!(
-                    "{}/features?apiKey={}",
-                    self.config.url, self.config.api_key
-                ))
-                .send()
-                .await
-            else {
-                do_timeout(i).await;
-                continue;
-            };
+        for attempt in 1..=ATTEMPTS {
+            match self.fetch_once(&client).await {
+                Ok(features) => {
+                    let mut cache = self.cache.write().await;
+                    cache.cached_features = features;
+                    cache.last_cache = Some(Instant::now());
+                    return Ok(());
+                }
+                Err(e) => {
+                    last_error = Some(e);
 
-            if !response.status().is_success() {
-                do_timeout(i).await;
-                continue;
+                    if attempt < ATTEMPTS {
+                        let timeout =
+                            Duration::from_millis(100) * attempt.pow(2);
+                        tokio::time::sleep(timeout).await;
+                    }
+                }
             }
-
-            eprintln!("updating cache");
-            let mut cache = self.cache.write().await;
-            let response: Vec<FeatureHubResponse> = response.json().await?;
-            cache.cached_features =
-                response.into_iter().flat_map(|r| r.features).collect();
-            cache.last_cache = Some(Instant::now());
-            eprintln!("cache: {cache:?}");
-            return Ok(());
         }
 
-        Ok(())
+        match last_error {
+            Some(e) => Err(e),
+            None => bail!("Could not fetch features from FeatureHub"),
+        }
+    }
+
+    async fn fetch_once(
+        &self,
+        client: &reqwest::Client,
+    ) -> anyhow::Result<Vec<Feature>> {
+        let response = client
+            .get(format!(
+                "{}/features?apiKey={}",
+                self.config.url, self.config.api_key
+            ))
+            .send()
+            .await?
+            .error_for_status()?;
+
+        let response: Vec<FeatureHubResponse> = response.json().await?;
+
+        Ok(response.into_iter().flat_map(|r| r.features).collect())
     }
 
     async fn should_try_lookup(&self) -> bool {
