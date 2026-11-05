@@ -56,7 +56,10 @@ services:
         condition: service_healthy
 
   subscriber-service:
-    build: ./services/subscriber-service
+    build:
+      context: ./services/subscriber-service
+      additional_contexts:
+        feature-lib: ./services/feature-lib
     ports:
       - "3003:3003"
     depends_on:

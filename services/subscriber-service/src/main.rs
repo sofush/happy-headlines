@@ -13,6 +13,10 @@ use axum::{
         post,
     },
 };
+use feature_lib::{
+    FeatureApiConfig,
+    Features,
+};
 use redis::AsyncCommands as _;
 use tokio_postgres::{
     Client,
@@ -31,12 +35,37 @@ mod subscriber;
 struct AppState {
     db: Client,
     redis: redis::aio::MultiplexedConnection,
+    features: Features,
+}
+
+async fn get_boolean_feature(
+    features: &Features,
+    key: &str,
+    default: bool,
+) -> bool {
+    let Ok(feature) = features.get(key).await else {
+        return default;
+    };
+
+    if let Some(b) = feature.value.as_bool() {
+        return b;
+    }
+
+    default
+}
+
+async fn service_enabled(features: &Features) -> bool {
+    get_boolean_feature(features, "subscriber-service", true).await
 }
 
 async fn post_subscriber(
     State(state): State<Arc<AppState>>,
     Json(subscriber): Json<Subscriber>,
 ) -> Result<(StatusCode, Json<Subscriber>), StatusCode> {
+    if !service_enabled(&state.features).await {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+
     let row = state
         .db
         .query_opt(
@@ -75,6 +104,10 @@ async fn delete_subscriber(
     State(state): State<Arc<AppState>>,
     Query(subscriber): Query<DeleteSubscriber>,
 ) -> Result<StatusCode, StatusCode> {
+    if !service_enabled(&state.features).await {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+
     let deleted = state
         .db
         .execute(
@@ -105,6 +138,10 @@ async fn delete_subscriber(
 async fn take_new_subscribers(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<Subscriber>>, StatusCode> {
+    if !service_enabled(&state.features).await {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+
     let mut redis = state.redis.clone();
     let mut subscribers = Vec::new();
 
@@ -142,10 +179,17 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let redis = redis::Client::open("redis://redis-subscriber-queue:6379/")?;
+    let features = Features::new(FeatureApiConfig {
+        url: std::env::var("FEATUREHUB_URL")
+            .unwrap_or(String::from("http://featurehub:8085")),
+        api_key: std::env::var("FEATUREHUB_API_KEY")
+            .unwrap_or(String::from("b29c5fa4-0e2b-4373-8cbb-e8ab72df4275/Kq4d2EE7UAaHKjQz4JGWQ6L7HnP07t*nAoDknnCWGjBgNmjIwGe")),
+    });
 
     let state = Arc::new(AppState {
         db: client,
         redis: redis.get_multiplexed_async_connection().await?,
+        features,
     });
 
     let app = Router::new()
