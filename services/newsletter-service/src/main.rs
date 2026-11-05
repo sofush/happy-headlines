@@ -52,7 +52,7 @@ async fn should_send_emails(features: &Features) -> bool {
 async fn send_newsletters(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<NewsletterRun>, StatusCode> {
-    if should_send_emails(&state.features).await {
+    if !should_send_emails(&state.features).await {
         return Ok(Json(NewsletterRun { sent: 0 }));
     }
 
