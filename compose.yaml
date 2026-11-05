@@ -60,6 +60,9 @@ services:
       context: ./services/subscriber-service
       additional_contexts:
         feature-lib: ./services/feature-lib
+    environment:
+      FEATUREHUB_URL: "http://featurehub:8085"
+      FEATUREHUB_API_KEY: b29c5fa4-0e2b-4373-8cbb-e8ab72df4275/Kq4d2EE7UAaHKjQz4JGWQ6L7HnP07t*nAoDknnCWGjBgNmjIwGe
     ports:
       - "3003:3003"
     depends_on:
