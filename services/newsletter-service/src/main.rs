@@ -77,8 +77,6 @@ async fn send_newsletters(
             StatusCode::BAD_GATEWAY
         })?;
 
-    eprintln!("Pretending to send emails...");
-
     for subscriber in &subscribers {
         send_welcome_mail(&subscriber.email).await;
     }

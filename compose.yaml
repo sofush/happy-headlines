@@ -214,7 +214,7 @@ services:
   article-service-1:
     build: ./services/article-service
     environment:
-      RUST_LOG: "info,article_service=debug,tower_http=info"
+      RUST_LOG: "warn,article_service=info,tower_http=info"
       OTEL_SERVICE_NAME: "article-service"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4317"
     depends_on:
@@ -242,7 +242,7 @@ services:
   article-service-2:
     build: ./services/article-service
     environment:
-      RUST_LOG: "info,article_service=debug,tower_http=info"
+      RUST_LOG: "warn,article_service=info,tower_http=info"
       OTEL_SERVICE_NAME: "article-service"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4317"
     depends_on:
@@ -270,7 +270,7 @@ services:
   article-service-3:
     build: ./services/article-service
     environment:
-      RUST_LOG: "info,article_service=debug,tower_http=info"
+      RUST_LOG: "warn,article_service=info,tower_http=info"
       OTEL_SERVICE_NAME: "article-service"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4317"
     depends_on:

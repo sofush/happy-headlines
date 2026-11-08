@@ -41,6 +41,8 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 static PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
 
+const DEFAULT_LOG_FILTER: &str = "warn,article_service=info,tower_http=info";
+
 pub fn init(instance: &str) -> anyhow::Result<()> {
     let service_name = "article-service";
     let exporter = opentelemetry_otlp::SpanExporter::builder()
@@ -65,9 +67,10 @@ pub fn init(instance: &str) -> anyhow::Result<()> {
     global::set_text_map_propagator(TraceContextPropagator::new());
 
     tracing_subscriber::registry()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-            EnvFilter::new("info,article_service=debug,tower_http=info")
-        }))
+        .with(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER)),
+        )
         .with(tracing_subscriber::fmt::layer())
         .with(
             tracing_opentelemetry::layer()

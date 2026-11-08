@@ -104,8 +104,6 @@ async fn create_article(
         );
     }
 
-    tracing::info!(continent = %continent, article.id = article.id, "article created");
-
     Ok((StatusCode::CREATED, Json(article)))
 }
 
@@ -125,7 +123,6 @@ async fn get_article(
     {
         tracing::Span::current().record("cache", "hit");
         ARTICLE_CACHE_HITS_TOTAL.increment(1);
-        tracing::info!(continent = %continent, id = %id, "article read");
         return Ok(Json(article));
     }
 
@@ -143,12 +140,11 @@ async fn get_article(
     let article = match row {
         Some(row) => Article::from_row(row),
         None => {
-            tracing::info!(continent = %continent, id = %id, "article not found");
+            tracing::debug!(continent = %continent, id = %id, "article not found");
             return Err(StatusCode::NOT_FOUND);
         }
     };
 
-    tracing::info!(continent = %continent, id = %id, "article read");
     Ok(Json(article))
 }
 
@@ -175,7 +171,7 @@ async fn update_article(
     let updated = match row {
         Some(row) => Article::from_row(row),
         None => {
-            tracing::info!(
+            tracing::debug!(
                 continent = %continent,
                 id = %id,
                 "article not found"
@@ -184,11 +180,6 @@ async fn update_article(
         }
     };
 
-    tracing::info!(
-        continent = %continent,
-        id = %updated.id,
-        "article updated"
-    );
     Ok(Json(updated))
 }
 
@@ -216,11 +207,10 @@ async fn delete_article(
     }
 
     if deleted == 0 {
-        tracing::info!(continent = %continent, id = %id, "article not found");
+        tracing::debug!(continent = %continent, id = %id, "article not found");
         return Err(StatusCode::NOT_FOUND);
     }
 
-    tracing::info!(continent = %continent, id = %id, "article deleted");
     Ok(StatusCode::NO_CONTENT)
 }
 

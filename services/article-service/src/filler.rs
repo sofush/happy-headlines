@@ -32,7 +32,7 @@ pub fn spawn(state: std::sync::Arc<AppState>) {
 
             refresh
                 .instrument(
-                    tracing::info_span!("cache.refresh", instance = %instance),
+                    tracing::debug_span!("cache.refresh", instance = %instance),
                 )
                 .await;
 
@@ -41,7 +41,7 @@ pub fn spawn(state: std::sync::Arc<AppState>) {
     });
 }
 
-#[tracing::instrument(level = "INFO", skip(state))]
+#[tracing::instrument(level = "DEBUG", skip(state))]
 async fn refresh(state: &AppState) -> anyhow::Result<()> {
     if !cache::acquire_filler_lease(state.redis.clone(), &state.instance)
         .await?
@@ -56,7 +56,7 @@ async fn refresh(state: &AppState) -> anyhow::Result<()> {
     let filled = fill_with_latest_articles(state, date_cutoff).await?;
     let evicted = evict_old_articles(state, date_cutoff).await?;
 
-    tracing::info!(filled, evicted, "refreshed the article cache");
+    tracing::debug!(filled, evicted, "refreshed the article cache");
     Ok(())
 }
 
