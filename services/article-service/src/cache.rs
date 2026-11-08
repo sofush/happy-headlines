@@ -1,11 +1,6 @@
 use std::time::Duration;
 
-use redis::{
-    AsyncCommands as _,
-    ExistenceCheck,
-    SetExpiry,
-    SetOptions,
-};
+use redis::AsyncCommands as _;
 use tracing::Instrument as _;
 
 use crate::article::Article;
@@ -79,32 +74,6 @@ pub async fn evict_cached_article(
         "db.operation.name" = "del",
         continent,
         "article.id" = %id
-    ))
-    .await
-}
-
-pub async fn acquire_filler_lease(
-    mut redis: redis::aio::MultiplexedConnection,
-    instance: &str,
-) -> anyhow::Result<bool> {
-    async {
-        let claim: Option<String> = redis
-            .set_options(
-                "articlecache:filler",
-                instance,
-                SetOptions::default()
-                    .conditional_set(ExistenceCheck::NX)
-                    .with_expiration(SetExpiry::EX(30 * 60)),
-            )
-            .await?;
-
-        Ok(claim.is_some())
-    }
-    .instrument(tracing::debug_span!(
-        "cache.acquire_lease",
-        "db.system" = "redis",
-        "db.operation.name" = "acquire_lease",
-        instance
     ))
     .await
 }

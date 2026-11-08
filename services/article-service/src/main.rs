@@ -51,7 +51,6 @@ const CONTINENTS: &[(&str, &str)] = &[
 
 mod article;
 mod cache;
-mod filler;
 mod telemetry;
 
 static ARTICLE_CACHE_HITS_TOTAL: LazyLock<Counter> =
@@ -62,7 +61,6 @@ static ARTICLE_CACHE_MISSES_TOTAL: LazyLock<Counter> =
 
 pub struct AppState {
     pub shards: HashMap<String, Client>,
-    pub instance: String,
     pub redis: redis::aio::MultiplexedConnection,
 }
 
@@ -88,21 +86,7 @@ async fn create_article(
 
     let article = Article::from_row(row);
 
-    if let Err(e) = cache::store_cached_article(
-        state.redis.clone(),
-        &continent,
-        article.id,
-        &article,
-    )
-    .await
-    {
-        tracing::warn!(
-            continent = %continent,
-            article.id = article.id,
-            error = %e,
-            "could not cache created article"
-        );
-    }
+    cache_article(&state, &article).await;
 
     Ok((StatusCode::CREATED, Json(article)))
 }
@@ -145,6 +129,8 @@ async fn get_article(
         }
     };
 
+    cache_article(&state, &article).await;
+
     Ok(Json(article))
 }
 
@@ -180,6 +166,8 @@ async fn update_article(
         }
     };
 
+    cache_article(&state, &updated).await;
+
     Ok(Json(updated))
 }
 
@@ -212,6 +200,24 @@ async fn delete_article(
     }
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn cache_article(state: &AppState, article: &Article) {
+    if let Err(e) = cache::store_cached_article(
+        state.redis.clone(),
+        &article.continent,
+        article.id,
+        article,
+    )
+    .await
+    {
+        tracing::warn!(
+            continent = %article.continent,
+            article.id = article.id,
+            error = %e,
+            "could not cache article"
+        );
+    }
 }
 
 fn shard<'a>(
@@ -294,13 +300,7 @@ async fn serve(instance: &str) -> anyhow::Result<()> {
         .get_multiplexed_async_connection()
         .await?;
 
-    let state = Arc::new(AppState {
-        shards,
-        instance: instance.to_string(),
-        redis,
-    });
-
-    filler::spawn(state.clone());
+    let state = Arc::new(AppState { shards, redis });
 
     let app = Router::new()
         .route("/continents/{continent}/articles", post(create_article))
