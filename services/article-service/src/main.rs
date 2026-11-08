@@ -23,7 +23,10 @@ use tokio_postgres::{
     Client,
     NoTls,
 };
-use tower_http::trace::TraceLayer;
+use tower_http::{
+    compression::CompressionLayer,
+    trace::TraceLayer,
+};
 
 use crate::{
     article::{
@@ -315,6 +318,7 @@ async fn serve(instance: &str) -> anyhow::Result<()> {
                 .make_span_with(HttpMakeSpan)
                 .on_response(HttpOnResponse),
         )
+        .layer(CompressionLayer::new())
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;

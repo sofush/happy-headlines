@@ -24,6 +24,7 @@ use tokio_postgres::{
     Client,
     NoTls,
 };
+use tower_http::compression::CompressionLayer;
 
 use crate::comment::{
     Comment,
@@ -240,6 +241,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/comments", get(get_comments))
         .route("/metrics", get(|| async move { metric_handle.render() }))
         .layer(prometheus_layer)
+        .layer(CompressionLayer::new())
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3001").await.unwrap();
