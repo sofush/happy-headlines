@@ -18,7 +18,7 @@ use axum::{
 };
 use axum_prometheus::PrometheusMetricLayer;
 use metrics::Counter;
-use reqwest::Client as ProfanityClient;
+use reqwest::Client as HttpClient;
 use std::sync::LazyLock;
 use tokio_postgres::{
     Client,
@@ -26,11 +26,17 @@ use tokio_postgres::{
 };
 use tower_http::compression::CompressionLayer;
 
-use crate::comment::{
-    Comment,
-    CommentQuery,
-    MaskComment,
-    NewComment,
+use crate::{
+    circuit_breaker::{
+        CircuitBreaker,
+        CircuitBreakerValue,
+    },
+    comment::{
+        Comment,
+        CommentQuery,
+        MaskComment,
+        NewComment,
+    },
 };
 
 const PROFANITY_SERVICE_URL: &str = "http://profanity-service:3002";
@@ -44,12 +50,14 @@ static COMMENT_CACHE_MISSES_TOTAL: LazyLock<Counter> =
     LazyLock::new(|| metrics::counter!("comment_cache_misses_total"));
 
 mod cache;
+mod circuit_breaker;
 mod comment;
 
 struct AppState {
     redis: redis::aio::MultiplexedConnection,
     db: Client,
-    profanity: ProfanityClient,
+    profanity: HttpClient,
+    profanity_breaker: CircuitBreaker,
 }
 
 async fn post_comment(
@@ -61,7 +69,8 @@ async fn post_comment(
         content: comment.content,
     };
 
-    let mask = mask_profanity(&state.profanity, &mask).await;
+    let mask =
+        mask_profanity(&state.profanity, &state.profanity_breaker, &mask).await;
 
     let row = state
         .db
@@ -141,12 +150,23 @@ async fn get_comments(
 }
 
 async fn mask_profanity(
-    profanity: &ProfanityClient,
+    profanity: &HttpClient,
+    breaker: &CircuitBreaker,
     comment: &MaskComment,
 ) -> MaskComment {
-    let content = remote_mask(profanity, comment)
+    let content = match breaker
+        .call_async(|| remote_mask(profanity, comment), Result::is_err)
         .await
-        .unwrap_or_else(|| mask_locally(&comment.content));
+    {
+        CircuitBreakerValue::Ok(content) => content,
+        CircuitBreakerValue::Err(()) => mask_locally(&comment.content),
+        CircuitBreakerValue::Unavailable => {
+            eprintln!(
+                "profanity service circuit breaker open, masking locally"
+            );
+            mask_locally(&comment.content)
+        }
+    };
 
     MaskComment {
         author: comment.author.clone(),
@@ -155,9 +175,9 @@ async fn mask_profanity(
 }
 
 async fn remote_mask(
-    profanity: &ProfanityClient,
+    profanity: &HttpClient,
     comment: &MaskComment,
-) -> Option<String> {
+) -> Result<String, ()> {
     let response = profanity
         .post(format!("{PROFANITY_SERVICE_URL}/mask"))
         .json(comment)
@@ -165,24 +185,23 @@ async fn remote_mask(
         .await
         .map_err(|e| {
             eprintln!("profanity service unavailable ({e}), masking locally")
-        })
-        .ok()?;
+        })?;
 
     if !response.status().is_success() {
         eprintln!(
             "profanity service replied {}, masking locally",
             response.status()
         );
-        return None;
+        return Err(());
     }
 
     match response.json::<MaskComment>().await {
-        Ok(masked) => Some(masked.content),
+        Ok(masked) => Ok(masked.content),
         Err(e) => {
             eprintln!(
                 "profanity service sent an unreadable body ({e}), masking locally"
             );
-            None
+            Err(())
         }
     }
 }
@@ -223,7 +242,7 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let profanity = ProfanityClient::builder()
+    let profanity = HttpClient::builder()
         .timeout(PROFANITY_TIMEOUT)
         .connect_timeout(PROFANITY_TIMEOUT)
         .build()?;
@@ -234,6 +253,7 @@ async fn main() -> anyhow::Result<()> {
         redis: redis.get_multiplexed_async_connection().await?,
         db: client,
         profanity,
+        profanity_breaker: CircuitBreaker::default(),
     });
 
     let app = Router::new()
