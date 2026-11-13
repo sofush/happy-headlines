@@ -4,21 +4,13 @@ use std::{
 };
 
 use axum::{
-    Json,
     Router,
-    extract::{
-        Path,
-        State,
-    },
-    http::StatusCode,
     routing::{
         get,
         post,
     },
 };
 use axum_prometheus::PrometheusMetricLayer;
-use metrics::Counter;
-use std::sync::LazyLock;
 use tokio_postgres::{
     Client,
     NoTls,
@@ -29,10 +21,14 @@ use tower_http::{
 };
 
 use crate::{
-    article::{
-        Article,
-        NewArticle,
+    cache::ArticleCache,
+    controller::{
+        create_article,
+        delete_article,
+        get_article,
+        update_article,
     },
+    repository::ArticleRepository,
     telemetry::{
         HttpMakeSpan,
         HttpOnResponse,
@@ -54,193 +50,9 @@ const CONTINENTS: &[(&str, &str)] = &[
 
 mod article;
 mod cache;
+mod controller;
+mod repository;
 mod telemetry;
-
-static ARTICLE_CACHE_HITS_TOTAL: LazyLock<Counter> =
-    LazyLock::new(|| metrics::counter!("article_cache_hits_total"));
-
-static ARTICLE_CACHE_MISSES_TOTAL: LazyLock<Counter> =
-    LazyLock::new(|| metrics::counter!("article_cache_misses_total"));
-
-pub struct AppState {
-    pub shards: HashMap<String, Client>,
-    pub redis: redis::aio::MultiplexedConnection,
-}
-
-#[tracing::instrument(
-    level = "INFO",
-    skip(state, article),
-    fields(continent = %continent)
-)]
-async fn create_article(
-    State(state): State<Arc<AppState>>,
-    Path(continent): Path<String>,
-    Json(article): Json<NewArticle>,
-) -> Result<(StatusCode, Json<Article>), StatusCode> {
-    let shard = shard(&state, &continent)?;
-
-    let row = shard
-        .query_one(
-            "INSERT INTO articles (continent, title, content) VALUES ($1, $2, $3) RETURNING id, continent, title, content, published_at",
-            &[&continent, &article.title, &article.content],
-        )
-        .await
-        .map_err(|e| database_error(&continent, "create", e))?;
-
-    let article = Article::from_row(row);
-
-    cache_article(&state, &article).await;
-
-    Ok((StatusCode::CREATED, Json(article)))
-}
-
-#[tracing::instrument(
-    level = "INFO",
-    skip(state),
-    fields(continent = %continent, id = %id, cache = tracing::field::Empty)
-)]
-async fn get_article(
-    State(state): State<Arc<AppState>>,
-    Path((continent, id)): Path<(String, i64)>,
-) -> Result<Json<Article>, StatusCode> {
-    let shard = shard(&state, &continent)?;
-
-    if let Ok(article) =
-        cache::get_cached_article(state.redis.clone(), &continent, id).await
-    {
-        tracing::Span::current().record("cache", "hit");
-        ARTICLE_CACHE_HITS_TOTAL.increment(1);
-        return Ok(Json(article));
-    }
-
-    tracing::Span::current().record("cache", "miss");
-    ARTICLE_CACHE_MISSES_TOTAL.increment(1);
-
-    let row = shard
-        .query_opt(
-            "SELECT id, continent, title, content, published_at FROM articles WHERE id = $1",
-            &[&id],
-        )
-        .await
-        .map_err(|e| database_error(&continent, "read", e))?;
-
-    let article = match row {
-        Some(row) => Article::from_row(row),
-        None => {
-            tracing::debug!(continent = %continent, id = %id, "article not found");
-            return Err(StatusCode::NOT_FOUND);
-        }
-    };
-
-    cache_article(&state, &article).await;
-
-    Ok(Json(article))
-}
-
-#[tracing::instrument(
-    level = "INFO",
-    skip(state, article),
-    fields(continent = %continent, id = %id)
-)]
-async fn update_article(
-    State(state): State<Arc<AppState>>,
-    Path((continent, id)): Path<(String, i64)>,
-    Json(article): Json<NewArticle>,
-) -> Result<Json<Article>, StatusCode> {
-    let shard = shard(&state, &continent)?;
-
-    let row = shard
-        .query_opt(
-            "UPDATE articles SET title = $2, content = $3 WHERE id = $1 RETURNING id, continent, title, content, published_at",
-            &[&id, &article.title, &article.content],
-        )
-        .await
-        .map_err(|e| database_error(&continent, "update", e))?;
-
-    let updated = match row {
-        Some(row) => Article::from_row(row),
-        None => {
-            tracing::debug!(
-                continent = %continent,
-                id = %id,
-                "article not found"
-            );
-            return Err(StatusCode::NOT_FOUND);
-        }
-    };
-
-    cache_article(&state, &updated).await;
-
-    Ok(Json(updated))
-}
-
-#[tracing::instrument(level = "INFO", skip(state), fields(continent = %continent, id = %id))]
-async fn delete_article(
-    State(state): State<Arc<AppState>>,
-    Path((continent, id)): Path<(String, i64)>,
-) -> Result<StatusCode, StatusCode> {
-    let shard = shard(&state, &continent)?;
-
-    let deleted = shard
-        .execute("DELETE FROM articles WHERE id = $1", &[&id])
-        .await
-        .map_err(|e| database_error(&continent, "delete", e))?;
-
-    if let Err(e) =
-        cache::evict_cached_article(state.redis.clone(), &continent, id).await
-    {
-        tracing::warn!(
-            continent = %continent,
-            id = %id,
-            error = %e,
-            "could not evict deleted article"
-        );
-    }
-
-    if deleted == 0 {
-        tracing::debug!(continent = %continent, id = %id, "article not found");
-        return Err(StatusCode::NOT_FOUND);
-    }
-
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn cache_article(state: &AppState, article: &Article) {
-    if let Err(e) = cache::store_cached_article(
-        state.redis.clone(),
-        &article.continent,
-        article.id,
-        article,
-    )
-    .await
-    {
-        tracing::warn!(
-            continent = %article.continent,
-            article.id = article.id,
-            error = %e,
-            "could not cache article"
-        );
-    }
-}
-
-fn shard<'a>(
-    state: &'a AppState,
-    continent: &str,
-) -> Result<&'a Client, StatusCode> {
-    state.shards.get(continent).ok_or_else(|| {
-        tracing::warn!(continent, "rejected request for unknown continent");
-        StatusCode::BAD_REQUEST
-    })
-}
-
-fn database_error(
-    continent: &str,
-    action: &str,
-    error: tokio_postgres::Error,
-) -> StatusCode {
-    tracing::error!(continent, action, error = %error, "database query failed");
-    StatusCode::INTERNAL_SERVER_ERROR
-}
 
 async fn shutdown_signal() {
     let interrupt = async {
@@ -270,12 +82,10 @@ async fn shutdown_signal() {
         () = terminate => {}
     }
 
-    tracing::info!("shutdown requested, draining in-flight requests");
+    tracing::info!("shutdown requested");
 }
 
-async fn serve(instance: &str) -> anyhow::Result<()> {
-    let (prometheus_layer, metric_handle) = PrometheusMetricLayer::pair();
-
+async fn connect_shards() -> anyhow::Result<HashMap<String, Client>> {
     let mut shards = HashMap::new();
 
     for (continent, dbname) in CONTINENTS {
@@ -299,11 +109,20 @@ async fn serve(instance: &str) -> anyhow::Result<()> {
         shards.insert(owned, client);
     }
 
+    Ok(shards)
+}
+
+async fn serve(instance: &str) -> anyhow::Result<()> {
+    let (prometheus_layer, metric_handle) = PrometheusMetricLayer::pair();
+
+    let shards = connect_shards().await?;
+
     let redis = redis::Client::open(REDIS_URL)?
         .get_multiplexed_async_connection()
         .await?;
 
-    let state = Arc::new(AppState { shards, redis });
+    let repository =
+        Arc::new(ArticleRepository::new(shards, ArticleCache::new(redis)));
 
     let app = Router::new()
         .route("/continents/{continent}/articles", post(create_article))
@@ -319,7 +138,7 @@ async fn serve(instance: &str) -> anyhow::Result<()> {
                 .on_response(HttpOnResponse),
         )
         .layer(CompressionLayer::new())
-        .with_state(state);
+        .with_state(repository);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     tracing::info!(instance, address = %listener.local_addr()?, "article-service listening");
