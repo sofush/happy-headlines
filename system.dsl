@@ -122,11 +122,6 @@ workspace "HappyHeadlines System" {
             newsletterService -> subscriberService "Retrieves active subscriber info and new subscribers from"
             newsletterService -> reader "Sends daily newsletter emails and welcome emails to new subscribers"
         }
-
-        # --- Context Level Relationships ---
-        publisher -> happyHeadlines "Writes, drafts, and publishes positive news articles using"
-        reader -> happyHeadlines "Reads articles, posts comments, and subscribes to newsletters on"
-        happyHeadlines -> reader "Sends daily newsletters to"
     }
 
     views {
