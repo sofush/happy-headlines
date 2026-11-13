@@ -1,6 +1,6 @@
 workspace "HappyHeadlines System" {
 
-    description "C4 Model (Context and Container levels) for the HappyHeadlines positive news platform."
+    description "C4 Model (Context, Container, and Component levels) for the HappyHeadlines positive news platform."
 
     model {
         !identifiers hierarchical
@@ -43,6 +43,35 @@ workspace "HappyHeadlines System" {
             
             articleService = container "ArticleService" "Retrieves article content from database and subscribes to published articles in the queue." "Service" {
                 tag "Service"
+
+                # Level 3 components of ArticleService
+                articleRouter = component "Article Router" "Router that maps HTTP requests to controllers and configures middleware." {
+                    tag "Component"
+                }
+
+                articleController = component "Article Controller" "HTTP handlers that expose the article CRUD endpoints and fetches data from the repository." {
+                    tag "Component"
+                }
+
+                articleRepository = component "Article Repository" "Checks Redis first, then reads from and writes to the PostgreSQL database/shard." {
+                    tag "Component"
+                }
+
+                articleCache = component "Article Cache" "Reads, writes, and evicts cached article in Redis." {
+                    tag "Component"
+                }
+
+                telemetry = component "Telemetry" "Configures OpenTelemetry tracing and Prometheus metrics." {
+                    tag "Component"
+                }
+
+                articleRouter -> articleController "Routes article requests to"
+                articleRouter -> telemetry "Configures request tracing and metrics through"
+                articleController -> articleRepository "Delegates article operations to"
+                articleRepository -> articleCache "Checks for and stores cached articles in"
+                articleController -> telemetry "Emits request traces through"
+                articleRepository -> telemetry "Emits data access traces through"
+                articleCache -> telemetry "Emits cache traces through"
             }
             
             commentService = container "CommentService" "Handles posting, filtering, and retrieval of reader comments." "Service" {
@@ -71,8 +100,12 @@ workspace "HappyHeadlines System" {
                 tag "Database"
             }
             
-            articleDatabase = container "ArticleDatabase" "Stores finalized and published articles." "Database" {
+            articleDatabase = container "ArticleDatabase" "Stores published articles." "Database" {
                 tag "Database"
+            }
+            
+            articleCacheStore = container "ArticleCacheStore" "Stores cached versions of recently published articles." "Redis" {
+                tag "Cache"
             }
             
             commentDatabase = container "CommentDatabase" "Stores reader comments." "Database" {
@@ -103,6 +136,7 @@ workspace "HappyHeadlines System" {
             reader -> website "Reads articles, posts comments, and subscribes via"
             website -> articleService "Fetches article data from"
             articleService -> articleDatabase "Retrieves article content from"
+            articleService -> articleCacheStore "Caches and retrieves articles from"
             articleService -> articleQueue "Subscribes to new articles in"
             
             # Reader commenting
@@ -122,6 +156,10 @@ workspace "HappyHeadlines System" {
             newsletterService -> subscriberService "Retrieves active subscriber info and new subscribers from"
             newsletterService -> reader "Sends daily newsletter emails and welcome emails to new subscribers"
         }
+
+        # --- Component Level Relationships ---
+        happyHeadlines.articleService.articleRepository -> happyHeadlines.articleDatabase "Reads and writes article rows in"
+        happyHeadlines.articleService.articleCache -> happyHeadlines.articleCacheStore "Caches article in"
     }
 
     views {
@@ -135,6 +173,12 @@ workspace "HappyHeadlines System" {
             include *
             autoLayout lr
             description "Container diagram showing services, databases, queues, and user interfaces in HappyHeadlines."
+        }
+
+        component happyHeadlines.articleService "ArticleServiceComponents" {
+            include *
+            autoLayout lr
+            description "Level 3 component diagram for ArticleService showing the router, controller, repository, cache, and telemetry components."
         }
 
         styles {
@@ -161,6 +205,16 @@ workspace "HappyHeadlines System" {
                 shape Cylinder
                 background #999999
                 color #ffffff
+            }
+            element "Cache" {
+                shape Cylinder
+                background #cc3333
+                color #ffffff
+            }
+            element "Component" {
+                shape RoundedBox
+                background #b3d4f5
+                color #000000
             }
             element "Queue" {
                 shape Pipe
