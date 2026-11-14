@@ -11,6 +11,7 @@ use crate::article::Article;
 
 pub const CACHE_PURGE_AGE: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 
+#[derive(Debug)]
 pub struct ArticleCache {
     redis: MultiplexedConnection,
 }
@@ -20,18 +21,25 @@ impl ArticleCache {
         Self { redis }
     }
 
+    #[tracing::instrument(
+        level = "INFO",
+        fields(continent = %continent, id = %id)
+    )]
     pub async fn get(
         &self,
         continent: &str,
         id: i64,
     ) -> anyhow::Result<Article> {
+        tracing::info!(
+            "Fetching article {id} from Redis cache (continent {continent})"
+        );
         let mut redis = self.redis.clone();
 
         async {
             let value: String = redis.get(cache_key(continent, id)).await?;
             serde_json::from_str::<_>(&value).map_err(|e| anyhow!(e))
         }
-        .instrument(tracing::debug_span!(
+        .instrument(tracing::info_span!(
             "cache.get",
             "db.system" = "redis",
             "db.operation.name" = "get",

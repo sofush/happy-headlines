@@ -29,6 +29,7 @@ pub enum RepositoryError {
     Database,
 }
 
+#[derive(Debug)]
 pub struct ArticleRepository {
     database: ArticleDatabase,
     cache: ArticleCache,
@@ -53,11 +54,17 @@ impl ArticleRepository {
         Ok(article)
     }
 
+    #[tracing::instrument(
+        level = "INFO",
+        fields(continent = %continent, id = %id)
+    )]
     pub async fn get(
         &self,
         continent: &str,
         id: i64,
     ) -> Result<Option<Article>, RepositoryError> {
+        tracing::info!("Entered ArticleRepository::get");
+
         if let Ok(article) = self.cache.get(continent, id).await {
             tracing::Span::current().record("cache", "hit");
             ARTICLE_CACHE_HITS_TOTAL.increment(1);
@@ -110,6 +117,10 @@ impl ArticleRepository {
         Ok(deleted)
     }
 
+    #[tracing::instrument(
+        level = "INFO",
+        fields(id = %article.id, continent = %article.continent, title = %article.title, published_at = %article.published_at)
+    )]
     async fn cache_article(&self, article: &Article) {
         if let Err(e) = self.cache.store(article).await {
             tracing::warn!(
@@ -122,6 +133,7 @@ impl ArticleRepository {
     }
 }
 
+#[derive(Debug)]
 struct ArticleDatabase {
     shards: HashMap<String, Client>,
 }
@@ -152,11 +164,18 @@ impl ArticleDatabase {
         Ok(Article::from_row(row))
     }
 
+    #[tracing::instrument(
+        level = "INFO",
+        fields(continent = %continent, id = %id)
+    )]
     async fn get(
         &self,
         continent: &str,
         id: i64,
     ) -> Result<Option<Article>, RepositoryError> {
+        tracing::info!(
+            "Fetching article {id} from SQL database (continent {continent})"
+        );
         let shard = self.shard(continent)?;
 
         let row = shard
